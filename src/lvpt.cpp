@@ -142,27 +142,74 @@ struct Sphere
 
     // Testing intersection with the _ray_ and return intersection point _tIntersection_
     // Returns distance, and 0 if it doesn't hit with any thing
-    double Intersect( const Ray &ray, double *tIntersection = NULL,
+    double Intersect( const Ray &ray,
+                      double *tIn = NULL,
                       double *tOut = NULL ) const
     {
-        Vector3 op = position-ray.origin; // Solve t^2*d.d + 2*t*(o-p).d + (o-p).(o-p)-R^2 = 0
-        double t;
-        double eps=1e-4;
-        double b=op.DotProduct(ray.direction);
-        double det=b*b-op.DotProduct(op)+radius*radius;
+        // Fudge factor (epsilon)
+        double EPSILON = 1e-4;
 
-        if( det < 0 )
+        /// A ray with the origin 'o' and direction 'd'
+        /// A sphere with know center 'c' and radius 'r'
+        /// A point 'p' is on the surface of the sphere
+
+        /// Solve for t where,
+        /// ((t * t) * (d . d) +
+        /// ((o - c). (2 * t * d)) +
+        /// ((o - c).(o - p)) - (R * R) = 0;
+
+        /// The parametric form the of the ray is
+        /// ray(t) = o + t * d; t >= 0
+        /// We can find t at which the ray intersects the sphere by
+        /// the formula A(t * t) + B * t + c = 0, where
+        /// A = d.d
+        /// B = 2 * (o - c) . d
+        /// C = (o - c) (o - c) - (r * r)
+
+        // Vector from the center of the sphere to the origin of the ray.
+        // p is the center of the sphere, ( p = c )
+        Vector3 oc = position - ray.origin;
+
+        // Compute A, B and C
+        // A = 1, becuase the ray is normalized.
+        // B = ( 2 * d ) . oc
+        // C = ( oc . oc ) - ( radius * radius )
+        // discrimanant = B * B - 4 (A * C);
+        // discriminant = (( 1 / 4 ) * B * B - C );
+
+        // Let's save some cycles and calculate the reduced factors.
+        const double reducedB = oc.DotProduct( ray.direction );
+
+        // Calculate the discriminant
+        double sqrtDiscriminant = 0;
+        const double discriminant =
+                (( reducedB * reducedB ) -
+                 oc.DotProduct( oc ) + ( radius * radius ));
+
+        // Check f the discriminant is less than zero or not.
+        // If negative, the ray misses the sphere, else intersects with it.
+        if( discriminant < 0 )
             return 0;
         else
-            det = sqrt( det );
+            sqrtDiscriminant = sqrt( discriminant );
 
-        if ( tIntersection && tOut )
+        // If both values of t are negative, then the sphere is
+        // behind the ray.
+        if ( tIn && tOut )
         {
-            *tIntersection = (b - det <= 0) ? 0:b - det;
-            *tOut = b + det;
+            if( reducedB - sqrtDiscriminant <= 0 )
+                *tIn = 0;
+            else
+                *tIn = reducedB - sqrtDiscriminant;
+
+            *tOut = ( reducedB + sqrtDiscriminant );
         }
 
-        return ( t=b-det ) > eps ? t : (( t = b + det) > eps ? t : 0 );
+        if( reducedB - sqrtDiscriminant > EPSILON)
+            return ( reducedB - sqrtDiscriminant );
+        if( reducedB + sqrtDiscriminant > EPSILON)
+            return ( reducedB + sqrtDiscriminant );
+        return 0;
     }
 };
 
@@ -174,7 +221,7 @@ inline double Clamp( const double value )
 
 inline int ColorToInteger( const double value )
 {
-    return int( pow( Clamp( value ), 1 / 2.2) * 255 + 0.5);
+    return int( pow( Clamp( value ), 1 / 2.2) * 255 + 0.5 );
 }
 
 // Creating a scene that is only composed of spheres.
@@ -183,7 +230,7 @@ Sphere sceneSpheres[] =
     Sphere( 25.0, Vector3( 27.0, 18.5, 78.0 ), Emission3( 00.0, 00.0, 00.0 ),
     Color3( 1.00, 1.00, 1.00 ) * 0.75, SPEC ),    //Mirr
     Sphere( 12.0, Vector3( 70.0, 43.0, 78.0 ), Emission3( 00.0, 00.0, 00.0 ),
-    Color3( 0.27, 0.80, 0.80 ) * 1.00, REFR ),    //Glas
+    Color3( 0.87, 0.10, 0.10 ) * 1.00, REFR ),    //Glas
     Sphere( 8.00, Vector3( 55.0, 87.0, 78.0 ), Emission3( 00.0, 00.0, 00.0 ),
     Color3( 1.00, 1.00, 1.00 ) * 0.75, DIFF ),    //Lite
     Sphere( 4.00, Vector3( 55.0, 80.0, 78.0 ), Emission3( 10.0, 10.0, 10.0 ),
@@ -191,28 +238,31 @@ Sphere sceneSpheres[] =
 };
 
 // Homogenous sphere (participating media)
-Sphere homogenousSphere(300, Vector3(50,50,80), Vector3(), Vector3(), DIFF);
+Sphere homogenousSphere( 300,
+                         Vector3( 50.0, 50.0, 80.0 ),
+                         Vector3( 00.0, 00.0, 00.0 ),
+                         Vector3( 00.0, 00.0, 00.0 ),
+                         DIFF );
 
 // Optical properties of the volume
 const double sigma_s = 0.009;
 const double sigma_a = 0.006;
 const double sigma_t = sigma_s + sigma_a;
 
-
-// Test intersection between ray and sphere
+// Test intersection between ray and spheres in the scene
+// and keep the closest intersection.
 inline bool Intersects( const Ray &ray,
                         double &tIntsct,
                         int &objId,
                         const double tMax = 1e20 )
 {
     // Number of spheres in the scene
-    double numSpheres = sizeof(sceneSpheres) / sizeof(Sphere);
+    double numSpheres = sizeof( sceneSpheres ) / sizeof( Sphere );
     double itsctDistance;
     double INFINITY_DISTANCE = tIntsct = tMax;
 
-
     // Checks if the ray intersects any sphere or not.
-    for(int iSphere = int( numSpheres ); iSphere--;)
+    for( int iSphere = int( numSpheres ); iSphere--; )
     {
         if(( itsctDistance = sceneSpheres[iSphere].Intersect( ray ))
                 && itsctDistance < tIntsct )
@@ -225,11 +275,13 @@ inline bool Intersects( const Ray &ray,
     return tIntsct < INFINITY_DISTANCE;
 }
 
+// The _segment_ is the line between the two scattering points
+// on the old and the new ray.
 inline double SampleSegment( const double epsilon,
-                             const float sigma,
-                             const float sMax )
+                             const float sigma_s,
+                             const float segmentMaximumDistance )
 {
-    return -log( 1.0 - epsilon * ( 1.0 - exp( -sigma * sMax ))) / sigma;
+    return -log( 1.0 - epsilon * ( 1.0 - exp( -sigma_s * segmentMaximumDistance ))) / sigma_s;
 }
 
 // Uniform phase function g = 0, by sampling a sphere
@@ -269,12 +321,17 @@ inline void GenerateOrthoBasis(Vector3 &u, Vector3 &v, Vector3 w) {
 }
 
 // Internal scattering in the volume
-inline double Scatter(const Ray &ray, Ray *sRay, double tIntsct, float tOut, double &segment)
+inline double Scatter( const Ray &ray,      // Input ray
+                       Ray *scatteredRay,   // Scattered ray
+                       double tIn,          // Where the ray enters the sphere
+                       float tOut,          // Where the ray exits the sphere
+                       double &segment )    // Segment length
 {
-    // ?
-    segment = SampleSegment(XORShift::RNG(), sigma_s, tOut - tIntsct);
+    // The segment is the path between two points
+    const double segmentMaximumDistance = tOut - tIn;
+    segment = SampleSegment(XORShift::RNG(), sigma_s, segmentMaximumDistance);
 
-    Vector3 x = ray.origin + ray.direction * tIntsct + ray.direction * segment;
+    Vector3 x = ray.origin + ray.direction * tIn + ray.direction * segment;
 
     // Sample a direction ~ uniform phase function
     // Vector3 direction = SampleSphere(XORShift::frand( ), XORShift::frand( ));
@@ -285,66 +342,233 @@ inline double Scatter(const Ray &ray, Ray *sRay, double tIntsct, float tOut, dou
     // Parameteric variable for determining the intersection point
     Vector3 u,v;
 
+    //
     GenerateOrthoBasis( u, v, ray.direction );
 
-    direction = ( u * direction.x ) +
+    // New scattering direction
+    direction =
+            ( u * direction.x ) +
             ( v * direction.y ) +
             ( ray.direction * direction.z );
-    if (sRay)
-        *sRay = Ray( x, direction );
-    return ( 1.0 - exp( -sigma_s * ( tOut - tIntsct )));
+
+    // If the ray is scattered, then assign to it the new starting point
+    // and the new direction after scatterig.
+    if (scatteredRay)
+        *scatteredRay = Ray( x, direction );
+
+    // Distance between the two points on the ray segment
+    const double distPointsSegment = tOut - tIn;
+
+    // Optical thickness
+    const double opticalThickness = sigma_s * distPointsSegment;
+
+    // TODO: Value ?
+    const double value = ( 1.0 - exp( -opticalThickness ));
+
+    return value;
 }
 
-Vector3 LRadiance(const Ray &r, int depth) {
-    double t;                               // distance to intersection
-    int id=0;                               // id of intersected object
-    double tnear, tfar, scaleBy=1.0, absorption=1.0;
-    bool intrsctmd = homogenousSphere.Intersect(r, &tnear, &tfar) > 0;
-    if (intrsctmd) {
-        Ray sRay;
-        double s, ms = Scatter(r, &sRay, tnear, tfar, s), prob_s = ms;
-        scaleBy = 1.0/(1.0-prob_s);
-        if (XORShift::RNG() <= prob_s) {// Sample surface or volume?
-            if (!Intersects(r, t, id, tnear + s))
-                return LRadiance(sRay, ++depth) * ms * (1.0/prob_s);
-            scaleBy = 1.0;
+// Calculate the radiance L at the ray.
+Vector3 LRadiance(const Ray &ray, int depth)
+{
+    // Distance to the intersection
+    double distToIntersection;
+
+    // Id of the intersected object
+    int intersectedObjID = 0;
+
+    //
+    double tNear, tFar;
+
+    //
+    double scaleFactor = 1.0;
+
+    //
+    double absorptionContribution = 1.0;
+
+    // Find te ray intersection with the homogenous sphere that
+    // represents the volume.
+    // Checks if the ray intersects the homogenous sphere or not
+    const double intersectionDistance =
+            homogenousSphere.Intersect(ray, &tNear, &tFar);
+
+    if( intersectionDistance > 0 )
+    {
+        // This is the scattered ray
+        Ray scatteredRay;
+        double s;
+        double ms = Scatter( ray, &scatteredRay, tNear, tFar, s );
+        double prob_s = ms;
+        scaleFactor = 1.0 / ( 1.0 - prob_s );
+
+
+        // Sample a surface or a volume
+        if (XORShift::RNG() <= prob_s)
+        {
+            if ( !Intersects( ray, distToIntersection, intersectedObjID , tNear + s ))
+                return LRadiance(scatteredRay, ++depth) * ms * (1.0/prob_s);
+            scaleFactor = 1.0;
         }
         else
-            if (!Intersects(r, t, id)) return Vector3();
-        if (t >= tnear) {
-            double dist = (t > tfar ? tfar - tnear : t - tnear);
-            absorption=exp(-sigma_t * dist);
+            if ( !Intersects( ray, distToIntersection, intersectedObjID ))
+                return Vector3(0.0, 0.0, 0.0);
+
+
+        if ( distToIntersection >= tNear )
+        {
+            const double distInVolume = (distToIntersection > tFar ? tFar - tNear : distToIntersection - tNear);
+            absorptionContribution = exp(-sigma_t * distInVolume);
         }
     }
     else
-        if (!Intersects(r, t, id)) return Vector3();
-    const Sphere &obj = sceneSpheres[id];        // the hit object
-    Vector3 x=r.origin+r.direction*t, n=(x-obj.position).Normalize(), nl=n.DotProduct(r.direction)<0?n:n*-1, f=obj.color,Le=obj.emission;
-    double p = f.x>f.y && f.x>f.z ? f.x : f.y>f.z ? f.y : f.z; // max refl
-    if (++depth>5) if (XORShift::RNG()<p) {f=f*(1/p);} else return Vector3(); //R.R.
-    if (n.DotProduct(nl)>0 || obj.reflection != REFR) {f = f * absorption; Le = obj.emission * absorption;}// no absorption inside glass
-    else scaleBy=1.0;
-    if (obj.reflection == DIFF) {                  // Ideal DIFFUSE reflection
-        double r1=2*M_PI*XORShift::RNG(), r2=XORShift::RNG(), r2s=sqrt(r2);
-        Vector3 w=nl, u=((fabs(w.x)>.1?Vector3(0,1):Vector3(1))%w).Normalize(), v=w%u;
-        Vector3 d = (u*cos(r1)*r2s + v*sin(r1)*r2s + w*sqrt(1-r2)).Normalize();
-        return (Le + f.Multiply(LRadiance(Ray(x,d),depth))) * scaleBy;
-    } else if (obj.reflection == SPEC)            // Ideal SPECULAR reflection
-        return (Le + f.Multiply(LRadiance(Ray(x,r.direction-n*2*n.DotProduct(r.direction)),depth))) * scaleBy;
-    Ray reflRay(x, r.direction-n*2*n.DotProduct(r.direction));     // Ideal dielectric REFRACTION
-    bool into = n.DotProduct(nl)>0;                // Ray from outside going in?
-    double nc=1, nt=1.5, nnt=into?nc/nt:nt/nc, ddn=r.direction.DotProduct(nl), cos2t;
-    if ((cos2t=1-nnt*nnt*(1-ddn*ddn))<0)    // Total internal reflection
-        return (Le + f.Multiply(LRadiance(reflRay,depth)));
-    Vector3 tdir = (r.direction*nnt - n*((into?1:-1)*(ddn*nnt+sqrt(cos2t)))).Normalize();
-    double a=nt-nc, b=nt+nc, R0=a*a/(b*b), c = 1-(into?-ddn:tdir.DotProduct(n));
-    double Re=R0+(1-R0)*c*c*c*c*c,Tr=1-Re,P=.25+.5*Re,RP=Re/P,TP=Tr/(1-P);
-    return (Le + (depth>2 ? (XORShift::RNG()<P ?   // Russian roulette
-                                                     LRadiance(reflRay,depth)*RP:f.Multiply(LRadiance(Ray(x,tdir),depth)*TP)) :
-                            LRadiance(reflRay,depth)*Re+f.Multiply(LRadiance(Ray(x,tdir),depth)*Tr)))*scaleBy;
-}
-int main( int argc, char *argv[] ) {
+        if ( !Intersects( ray, distToIntersection, intersectedObjID ))
+            return Vector3(0.0, 0.0, 0.0);
 
+    // The hit sphere (object)
+    const Sphere &obj = sceneSpheres[ intersectedObjID ];
+
+    // Distance until the intersection in the sphere volume3
+    // Ray intersection point
+    Vector3 intersectionPoint =
+            ray.origin + ray.direction * distToIntersection;
+
+    // Get the direction from the intersection point to the
+    // center of the sphere.
+    // Normal on the surface of the sphere at the
+    // intersection point.
+    Vector3 normalItsPoint =
+            ( intersectionPoint - obj.position ).Normalize();
+
+    // Get the correct direction.
+    // Properly orient the surface normal.
+    Vector3 normalVector(0.0, 0.0, 0.0);
+    if ( normalItsPoint.DotProduct( ray.direction ) < 0 )
+        normalVector = normalItsPoint;
+    else
+        normalVector = normalItsPoint * -1;
+
+    // Get the object color BRDF modulator of the intersected object.
+    Vector3 f_BRDF = obj.color;
+
+    // Get the emissive properties of the object.
+    Vector3 Le = obj.emission;
+
+    // Maximum reflection ?
+    double p = (f_BRDF.x > f_BRDF.y && f_BRDF.x > f_BRDF.z ) ? f_BRDF.x : f_BRDF.y > f_BRDF.z ? f_BRDF.y : f_BRDF.z;
+
+
+    if( ++depth > 5 )
+    {
+        if( XORShift::RNG() < p )
+            f_BRDF = f_BRDF * ( 1 / p );
+        else
+            return Vector3( 0.0, 0.0, 0.0 ); // R.R.
+    }
+
+    if ( normalItsPoint.DotProduct(normalVector) > 0 || obj.reflection != REFR)
+    {
+        f_BRDF = f_BRDF * absorptionContribution;
+        Le = obj.emission * absorptionContribution; // no absorption inside glass
+    }
+    else
+        scaleFactor = 1.0;
+
+
+    // Ideal DIFFUSE reflection
+    if ( obj.reflection == DIFF )
+    {
+        // Angle around
+        const double r1 = 2 * M_PI * XORShift::RNG( );
+
+        // Distance from center
+        const double r2 = XORShift::RNG( );
+        double r2s = sqrt(r2);
+
+        // Normal vector(s) 'w', 'u' and 'v' are normal to each others.
+        Vector3 w = normalVector;
+        Vector3 u = (( fabs( w.x ) > 0.1 ? Vector3( 0,1 ) :
+                                           Vector3( 1)) %w ).Normalize( );
+        Vector3 v =w % u;
+
+        // Direction of random reflection ray.
+        Vector3 reflectionRay = ( u * cos( r1 ) * r2s +
+                                  v * sin( r1 ) * r2s +
+                                  w * sqrt( 1 - r2 )).Normalize( );
+
+        // Return the radiance emitted from the point Le
+        // in addition to the reflected due to the BRDF (scaled with _scaleFactor_)
+        const Vector3 LEmission = Le;
+        const Vector3 LReflective =
+                f_BRDF.Multiply( LRadiance( Ray( intersectionPoint,
+                                                 reflectionRay ),
+                                            depth ));
+
+        const Vector3 LDiffuse = ( LEmission + LReflective ) * scaleFactor;
+        return LDiffuse;
+    }
+    else
+        // Ideal SPECULAR reflection
+        if (obj.reflection == SPEC)
+        {
+            const Vector3 LEmission = Le;
+            const Vector3 specularRayDirection =
+                    ray.direction - normalItsPoint * 2 *
+                    normalItsPoint.DotProduct( ray.direction );
+            const Vector3 LReflective =
+                    f_BRDF.Multiply(
+                        LRadiance( Ray( intersectionPoint,
+                                        specularRayDirection), depth ));
+
+            const Vector3 LSpecular = (LEmission + LReflective ) * scaleFactor;
+            return LSpecular;
+        }
+
+    // Ideal dielectric REFRACTION, glass surface
+    Ray reflRay(intersectionPoint,
+                ray.direction - normalItsPoint *
+                2 * normalItsPoint.DotProduct( ray.direction ));
+
+    // Compute whether the ray is entering or exitting the glass surface.
+    bool inOrOut = normalItsPoint.DotProduct(normalVector) > 0;
+
+    // Refractive indices
+    // Air refractive index
+    double nAmbient = 1;
+
+    // Glass refractive index
+    double nGlass = 1.5;
+
+    // Ratio between the refractive indices
+    double nChange = inOrOut ?
+                ( nAmbient / nGlass ) : ( nGlass / nAmbient );
+
+
+    double ddn = ray.direction.DotProduct(normalVector);
+
+    // Total internal reflection
+    double cos2t;
+    if ((cos2t = 1 - nChange * nChange *(1 - ddn * ddn)) < 0)
+        return (Le + f_BRDF.Multiply(LRadiance(reflRay,depth)));
+
+    Vector3 tdir = (ray.direction*nChange  - normalItsPoint*((inOrOut?1:-1)*(ddn*nChange +sqrt(cos2t)))).Normalize();
+    double a=nGlass-nAmbient;
+    double b = nGlass + nAmbient;
+    double R0 = a * a / ( b * b );
+    double c = 1 - ( inOrOut?-ddn:tdir.DotProduct( normalItsPoint ));
+    double Re = R0 +( 1 -R0 ) * c * c * c * c * c;
+    double Tr = 1 - Re;
+    double P = 0.25 + 0.5 * Re;
+    double RP = Re / P;
+    double TP = Tr / ( 1 - P );
+
+
+    // Russian roulette for multiple scattering
+    return (Le + (depth>2 ? (XORShift::RNG()<P ? LRadiance(reflRay,depth)*RP:f_BRDF.Multiply(LRadiance(Ray(intersectionPoint,tdir),depth)*TP)) :
+                            LRadiance(reflRay,depth)*Re+f_BRDF.Multiply(LRadiance(Ray(intersectionPoint,tdir),depth)*Tr)))*scaleFactor;
+}
+
+int main( int argc, char *argv[] )
+{
     unsigned int imageWidth     = 500;
     unsigned int imageHeight    = 500;
     unsigned int pixelSamples = argc == 2 ? atoi( argv[1] ) / 4 : 1;
@@ -365,8 +589,10 @@ int main( int argc, char *argv[] ) {
     // Loop over image rows
     for ( unsigned int y = 0; y < imageHeight; y++ )
     {
-        fprintf(stderr,"\n Rendering (%d samples/pixel) %5.2f%%", pixelSamples * 4, 100.0 * y / ( imageHeight - 1 ));
-        for ( unsigned short x = 0; x < imageWidth; x++)   // Loop cols
+        fprintf(stderr,"\n Rendering (%d samples/pixel) %5.2f%%",
+                pixelSamples * 4, 100.0 * y / ( imageHeight - 1 ));
+        // Loop over image columns
+        for ( unsigned short x = 0; x < imageWidth; x++)
 
             // Sub-pixel image filteration
             for ( int sy = 0, i = (imageHeight -  y - 1) * imageWidth + x; sy < 2; sy++ )
@@ -375,9 +601,9 @@ int main( int argc, char *argv[] ) {
                     for ( int s = 0; s < pixelSamples; s++)
                     {
                         double r1 = 2 * XORShift::RNG( );
-                        double dx = r1 < 1 ? sqrt( r1 ) - 1: 1 - sqrt( 2 - r1 );
+                        double dx = ( r1 < 1 ) ? ( sqrt( r1 ) - 1 ):( 1 - sqrt( 2 - r1 ));
                         double r2 = 2 * XORShift::RNG();
-                        double dy = r2 < 1 ? sqrt( r2 ) - 1: 1 - sqrt( 2 - r2 );
+                        double dy = ( r2 < 1 ) ? ( sqrt( r2 ) - 1 ):( 1 - sqrt( 2 - r2 ));
 
                         Vector3 d = cx * (((sx + 0.5 + dx) / 2 + x ) / imageWidth - .5 ) +
                                 cy * ((( sy + 0.5 + dy ) / 2 + y ) / imageHeight - .5 ) +
@@ -387,7 +613,6 @@ int main( int argc, char *argv[] ) {
                                                 d.Normalize( )), 0 ) * ( 1.0 / pixelSamples );
                     }
 
-                    // Camera rays are pushed ^^^^^ forward to start in interior.
                     c[i] = c[i] + Vector3( Clamp( r.x ), Clamp( r.y ), Clamp( r.z )) * 0.25;
                 }
     }
